@@ -1,0 +1,214 @@
+---
+title: "example"
+format: html
+editor: source
+---
+
+```{r}
+# Install pacman if it's not already on the system
+if (!require("pacman")) install.packages("pacman")
+
+# Use p_load to install (if missing) and load all libraries at once
+pacman::p_load(medicaldata, tidyverse, gtsummary, rsample, broom, caret)
+
+# Load the data and inspect
+covid_testing <- readxl::read_excel("covid_sample.xlsx")
+glimpse(covid_testing)
+
+
+
+```
+
+```{r}
+covid_testing$clinic_name |> unique()
+```
+
+
+```{r}
+covid_testing_model <- covid_testing |>
+  mutate(
+    clinic_group = case_when(
+      # If the string contains "inpatient ward", call it "Inpatient Ward"
+      str_detect(clinic_name, "inpatient ward") ~ "Inpatient Ward",
+      
+      # Use the | (OR) operator to catch multiple lab types
+      str_detect(clinic_name, "lab|virology|pathology|transfusion") ~ "Laboratory",
+      
+      # Catch abbreviations and full spellings
+      str_detect(clinic_name, "urg care|urgent care") ~ "Urgent Care",
+      
+      # Catch anything related to oncology
+      str_detect(clinic_name, "oncology|hem onc|onco") ~ "Oncology/Hematology",
+      
+      # Catch ICU types
+      str_detect(clinic_name, "picu|nicu") ~ "Intensive Care",
+      
+      # TRUE acts as a catch-all for anything that didn't match the rules above
+      TRUE ~ "Other" 
+    )
+  )
+
+covid_testing_model |> count(clinic_group)
+```
+
+```{r}
+covid_testing_model |> count(result)
+```
+
+
+```{r}
+
+covid_testing_model <- 
+  covid_testing_model |> 
+  filter(result != "invalid")
+
+covid_testing_model |> count(result)
+```
+
+
+
+
+```{r}
+covid_testing_model <- covid_testing_model |>
+  mutate(
+    # Cap the age at 120. Anything over 120 becomes NA.
+    age_clean = ifelse(age > 120, NA, age),
+    
+    # Group into 5 custom, clinically meaningful buckets
+    age_group = cut(age_clean, 
+                             breaks = c(-Inf, 4, 12, 17, 64, Inf), 
+                             labels = c("[0-4]", 
+                                        "[5-12]", 
+                                        "[13-17]", 
+                                        "[18-64]", 
+                                        "[65+]"))
+  )
+
+covid_testing_model |> count(age_group)
+```
+```{r}
+covid_testing_model %>%
+  select(result, age_group, gender, drive_thru_ind) %>%
+  tbl_summary(by = result) 
+```
+
+
+```{r}
+summary_table <- 
+  
+covid_testing_model %>%
+  select(result, age_group, gender, drive_thru_ind) %>%
+  tbl_summary(by = result) 
+
+#summary_table
+summary_table |> 
+  as_gt() %>%
+  gt::gtsave("table.docx")
+
+
+```
+
+
+
+
+```{r}
+covid_testing_model %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) |> 
+  glimpse()
+```
+
+
+```{r}
+covid_clean <- covid_testing_model %>%
+  select(-subject_id, 
+         -fake_first_name, 
+         -fake_last_name, 
+         -clinic_name,
+         # we will use age_group 
+         -age
+         ) |> 
+  mutate_if(is_character, factor) |> 
+  VIM::kNN()
+
+
+```
+
+```{r}
+covid_clean %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) |> 
+  glimpse()
+```
+
+
+```{r}
+set.seed(42) # For reproducibility
+split    <- initial_split(covid_clean, 
+                          prop = 0.80, 
+                          strata = result)
+train_df <- training(split)
+test_df  <- testing(split)
+
+cat("Train:", nrow(train_df), "| Test:", nrow(test_df))
+```
+
+
+
+```{r}
+
+model <- glm(
+  result ~ 
+    age_group + 
+    gender + 
+    drive_thru_ind + 
+    pan_day +
+    demo_group,
+  data   = train_df,
+  family = binomial(link = "logit")
+)
+
+gtsummary::tbl_regression(model, 
+                          exponentiate = TRUE)
+
+```
+
+
+```{r}
+gtsummary::tbl_regression(model, 
+                          exponentiate = TRUE) |> 
+  as_gt() %>%
+  gt::gtsave("model_table.docx")
+```
+
+
+
+
+```{r}
+
+tidy_res <- tidy(model, 
+                 exponentiate = TRUE, 
+                 conf.int = TRUE,
+                 conf.level = 0.95
+                 ) |>
+            # for visualization purposes only
+            filter(p.value < 0.2) 
+
+
+# Using 'tidy_res' generated from broom
+ggplot(tidy_res, aes(x = estimate, y = term)) +
+  geom_point(color = "#0891B2", size = 3) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  theme_minimal() + labs(x = "Odds Ratio (95% CI)", y = "Predictor")
+
+ggsave("plot_result.png")
+```
+
+```{r}
+# 1. Generate predicted classes (using a 0.5 threshold)
+pred_class <- factor(ifelse(predict(model, test_df, type = "response") > 0.5, 
+                            levels(test_df$result)[2], levels(test_df$result)[1]))
+
+# 2. Output the matrix and all metrics in one command
+confusionMatrix(data = pred_class, reference = test_df$result, positive="positive")
+```
+
