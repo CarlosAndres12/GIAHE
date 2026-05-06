@@ -1,0 +1,297 @@
+---
+title: "example_survival"
+format: html
+editor: source
+---
+
+
+```{r}
+# 1. Install 'pacman' only if it is not already installed on your system
+if (!require("pacman")) install.packages("pacman")
+
+# 2. Use pacman to install (if missing) and load all required packages
+pacman::p_load(
+  survival,    # Core survival analysis algorithms and datasets
+  survminer,   # Elegant, publication-ready ggplot2-based survival plots
+  gtsummary,   # Publication-ready summary and regression tables
+  tidycmprsk,  # Modern, tidy framework for competing risks (Fine-Gray)
+  mstate,      # Advanced multi-state modelling and data preparation
+  coxme,        # Mixed-effects Cox models for shared frailty/clustering
+  ggsurvfit    # More, publication-ready ggplot2-based survival plots
+)
+
+# 3. Verify packages are loaded
+print("All workshop packages successfully loaded!")
+```
+
+```{r}
+# Load the built-in lung cancer dataset
+data(lung)
+
+# 1. Standard Kaplan-Meier
+km_fit <- survfit(Surv(time, status) ~ sex, data = lung)
+
+# Publication-ready KM Plot
+ggsurvplot(
+  km_fit, 
+  data = lung, 
+  risk.table = TRUE,       # Adds a risk table below the plot
+  pval = TRUE,             # Adds log-rank p-value
+  conf.int = TRUE,         # Adds confidence intervals
+  palette = c("#E7B800", "#2E9FDF"), # Custom colors
+  ggtheme = theme_minimal(), # Clean background
+  title = "Overall Survival by Sex (Lung Cancer)",
+  legend.labs = c("Male", "Female")
+)
+
+# 2. Standard Cox Proportional Hazards Model
+cox_fit <- coxph(Surv(time, status) ~ age + factor(sex), data = lung)
+
+# Publication-ready Regression Table
+tbl_regression(cox_fit, exponentiate = TRUE) %>%
+  add_global_p() %>%
+  bold_p(t = 0.05) %>%
+  bold_labels() %>%
+  modify_caption("**Table 1. Multivariable Cox Regression Analysis**")
+```
+
+```{r}
+# 1. Test the PH assumption using Schoenfeld residuals
+ph_test <- cox.zph(cox_fit)
+
+# Publication-ready plot of Schoenfeld residuals
+ggcoxzph(ph_test, ggtheme = theme_bw(), font.main = 12)
+```
+
+```{r}
+
+# 1. Create a proper 0/1 dummy variable (0 = Male, 1 = Female)
+lung$sex_dummy <- lung$sex - 1
+
+# 1. Handling Non-PH: Stratified Cox Model
+cox_strat <- coxph(Surv(time, status) ~ age + strata(sex), data = lung)
+
+# 2. Handling Non-PH: Time-varying coefficient
+cox_time_var <- coxph(Surv(time, status) ~ age + factor(sex) + tt(sex_dummy), 
+                      data = lung,
+                      tt = function(x, t, ...) x * log(t))
+
+# 3. Compare the original model with the time-varying model
+tbl_merge(
+  tbls = list(
+    tbl_regression(cox_strat, exponentiate = TRUE),
+    tbl_regression(cox_time_var, exponentiate = TRUE)
+  ),
+  tab_spanner = c("**Standard Cox**", "**Time-varying Cox**")
+)
+```
+
+```{r}
+
+# --- 0. Prepare 'mgus2' data ---
+# Create a single time-to-first-event variable (etime)
+# If no progression (pstat == 0), use follow-up time (futime). Otherwise, use progression time (ptime).
+mgus2$etime <- ifelse(mgus2$pstat == 0, mgus2$futime, mgus2$ptime)
+
+# Create a single event status variable
+# 1 = PCM (Progression), 2 = Death without PCM, 0 = Censored
+mgus2$event <- ifelse(mgus2$pstat == 1, 1, 
+                      ifelse(mgus2$death == 1, 2, 0))
+
+# Convert to factor with strict labels for tidycmprsk
+mgus2$event_factor <- factor(mgus2$event, 0:2, c("Censored", "PCM", "Death"))
+
+# --- 1. Publication-ready Cumulative Incidence Function (CIF) Plot ---
+cuminc_fit <- cuminc(Surv(etime, event_factor) ~ sex, data = mgus2)
+
+ggcuminc(cuminc_fit, outcome = c("PCM", "Death")) +
+  add_confidence_interval() +
+  add_risktable() +
+  theme_minimal() +
+  labs(title = "Cumulative Incidence of PCM and Death", x = "Months")
+
+# --- 2. Cause-specific Cox (Etiology) ---
+# For cause-specific hazard of PCM, we treat competing events (Death) as censored (0)
+mgus2$status_pcm <- ifelse(mgus2$event == 1, 1, 0)
+cs_cox <- coxph(Surv(etime, status_pcm) ~ age + sex, data = mgus2)
+
+# --- 3. Fine-Gray Subdistribution Cox (Prediction) ---
+# Fine-Gray natively handles competing risks using the factor variable we created
+fg_cox <- crr(Surv(etime, event_factor) ~ age + sex, data = mgus2)
+
+# --- 4. Side-by-side comparison table ---
+tbl_merge(
+  tbls = list(
+    tbl_regression(cs_cox, exponentiate = TRUE),
+    tbl_regression(fg_cox, exponentiate = TRUE)
+  ),
+  tab_spanner = c("**Cause-Specific**", "**Fine-Gray**")
+)
+```
+
+```{r}
+# Create a dummy dataset
+set.seed(123)
+dummy_data <- data.frame(
+  id = 1:5,
+  trt_start_time = c(NA, 50, 120, 30, NA), # NA means never treated
+  fup_time = c(100, 200, 150, 80, 250),
+  event = c(1, 0, 1, 1, 0)
+)
+
+# 1. Extended Cox (tmerge)
+base_data <- tmerge(data1 = dummy_data, data2 = dummy_data, id = id, 
+                    event = event(fup_time, event))
+
+td_data <- tmerge(data1 = base_data, data2 = dummy_data, id = id, 
+                  trt_status = tdc(trt_start_time))
+
+td_cox <- coxph(Surv(tstart, tstop, event) ~ trt_status, data = td_data)
+
+# 2. Landmark Analysis (Landmark = Day 50)
+LM_time <- 50
+lm_data <- subset(dummy_data, fup_time > LM_time)
+lm_data$trt_at_LM <- ifelse(!is.na(lm_data$trt_start_time) & lm_data$trt_start_time <= LM_time, 1, 0)
+lm_data$fup_from_LM <- lm_data$fup_time - LM_time
+
+lm_cox <- coxph(Surv(fup_from_LM, event) ~ trt_at_LM, data = lm_data)
+
+# 3. Landmark Survival Plot
+lm_fit <- survfit(Surv(fup_from_LM, event) ~ trt_at_LM, data = lm_data)
+
+ggsurvplot(
+  lm_fit, 
+  data = lm_data, 
+  risk.table = TRUE,
+  palette = c("#E7B800", "#2E9FDF"),
+  ggtheme = theme_minimal(),
+  title = "Landmark Survival (from Day 50)",
+  legend.labs = c("Untreated at LM", "Treated at LM")
+)
+
+
+# 4. Present findings (Table)
+tbl_merge(
+  tbls = list(
+    tbl_regression(td_cox, exponentiate = TRUE),
+    tbl_regression(lm_cox, exponentiate = TRUE)
+  ),
+  tab_spanner = c("**Time-Dependent Cox**", "**Landmark (Day 50)**")
+)
+
+
+
+```
+
+```{r}
+# 1. Load data and define the transition matrix
+data(ebmt3)
+tmat <- trans.illdeath(c("Transplant", "Recovery", "Relapse/Death"))
+
+# 2. Prepare data to long format
+# The 'keep = "age"' argument ensures the factor variable isn't dropped
+ms_data <- msprep(time = c(NA, "prtime", "rfstime"), 
+                  status = c(NA, "prstat", "rfsstat"), 
+                  data = ebmt3, 
+                  trans = tmat,
+                  keep = "age")
+
+# 3. Expand the factor covariate
+# Because 'age' has 3 levels (<=20, 20-40, >40), and '<=20' is the reference,
+# R creates dummies for the other two levels across the 3 transitions.
+ms_data <- expand.covs(ms_data, "age")
+
+# 4. Fit the stratified Cox model
+# We explicitly call the newly generated dummy columns for each transition
+ms_cox <- coxph(Surv(Tstart, Tstop, status) ~ 
+                  age20.40.1 + age.40.1 +  # Transition 1: Transplant -> Recovery
+                  age20.40.2 + age.40.2 +  # Transition 2: Transplant -> Relapse/Death
+                  age20.40.3 + age.40.3 +  # Transition 3: Recovery -> Relapse/Death
+                  strata(trans), 
+                data = ms_data)
+
+# 5. Generate the publication-ready table
+# exponentiate = TRUE gives us Hazard Ratios instead of log-hazards
+tbl_regression(ms_cox, exponentiate = TRUE) %>% 
+  modify_caption("**Multi-State Transitions: Impact of Age Category (Baseline: <=20)**")
+```
+
+```{r}
+data(rats, package = "survival") 
+
+# 1. Standard Cox (ignores clustering)
+cox_naive <- coxph(Surv(time, status) ~ rx + sex, data = rats)
+
+# 2. Mixed-Effects Cox (Gaussian frailty) using coxme package
+cox_mixed <- coxme(Surv(time, status) ~ rx + sex + (1 | litter), data = rats)
+
+# Combine for publication table
+tbl_merge(
+  tbls = list(
+    tbl_regression(cox_naive, exponentiate = TRUE),
+    tbl_regression(cox_mixed, exponentiate = TRUE)
+  ),
+  tab_spanner = c("**Naive (No Frailty)**", "**Mixed Effects (Frailty)**")
+)
+
+```
+
+```{r}
+# Setup data
+data(colon)
+colon_death <- subset(colon, etype == 2) # Filter to model death only
+
+# Task 1: Fit the Cox Model
+cox_colon <- coxph(Surv(time, status) ~ rx + age, data = colon_death)
+
+# Task 2: Schoenfeld Residuals Test
+test_colon <- cox.zph(cox_colon)
+print(test_colon) # View p-values
+
+# Task 3: Plot the residuals
+ggcoxzph(test_colon, font.main = 12)
+# Answer: The p-value for 'rx' < 0.05, and the plot shows a trend 
+# line that isn't flat. The PH assumption is violated. The treatment effect 
+# is stronger early on and wanes over time.
+
+# Task 4 (Bonus): How to adjust?
+# You could use a stratified model if rx was just a confounder, but since it's 
+# the treatment of interest, you should use a time-varying coefficient tt(rx) 
+# or split the time window (e.g., effect in year 1 vs. effect after year 1).
+
+```
+
+```{r}
+# Task 1: Competing Risks with mgus2
+# Create binary hemoglobin category
+mgus2$hgb_cat <- ifelse(mgus2$hgb > 12, "> 12 g/dL", "<= 12 g/dL")
+mgus2$event_factor <- factor(mgus2$ptime, 0:2, c("Censored", "PCM", "Death"))
+
+# Calculate and plot CIF
+ex2_cuminc <- cuminc(Surv(futime, event_factor) ~ hgb_cat, data = mgus2)
+
+ggcuminc(ex2_cuminc, outcome = c("PCM", "Death")) +
+  add_confidence_interval() +
+  add_risktable() +
+  theme_minimal() +
+  labs(title = "CIF by Hemoglobin Category", x = "Months")
+
+# Task 2: Frailty Modeling with Kidney dataset
+data(kidney, package = "survival")
+
+# Fit Naive Cox
+naive_kidney <- coxph(Surv(time, status) ~ sex, data = kidney)
+
+# Fit Mixed-Effects (Frailty) Cox using patient ID
+mixed_kidney <- coxme(Surv(time, status) ~ sex + (1 | id), data = kidney)
+
+# Compare outputs
+tbl_merge(
+  tbls = list(
+    tbl_regression(naive_kidney, exponentiate = TRUE),
+    tbl_regression(mixed_kidney, exponentiate = TRUE)
+  ),
+  tab_spanner = c("**Naive (Ignores repeated infections)**", "**Frailty (Accounts for Patient ID)**")
+)
+```
+

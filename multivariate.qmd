@@ -1,0 +1,326 @@
+---
+title: "multivariate"
+format: html
+---
+
+```{r}
+# Install pacman if missing, then use it to load/install required packages
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(car, lmtest, ggplot2, emmeans, gtsummary)
+
+
+# load the data of the example
+epi_data <-  readRDS("data_multivariate.Rds")
+```
+
+```{r}
+epi_data
+```
+
+
+```{r}
+# Fit Multiple Linear Regression
+mod_multiple <- lm(sbp ~ pm25 + age +
+                         sex + bmi, 
+                   data = epi_data)
+
+# Print a basic summary to the console
+summary(mod_multiple)
+
+```
+
+```{r}
+# Create a publication-ready table using gtsummary
+tbl_regression(mod_multiple) |> 
+  add_global_p() |> 
+  bold_labels() |> 
+  bold_p(t = 0.05) |> 
+  modify_caption("**Table 1. Multivariable Linear Regression for Systolic Blood Pressure**")
+
+```
+
+```{r}
+# 1. Visual Diagnostic Plots
+par(mfrow = c(2, 2))
+plot(mod_multiple)
+par(mfrow = c(1, 1)) # Reset layout
+```
+
+```{r}
+# 2. Formal Test for Homoscedasticity (Breusch-Pagan Test)
+bptest(mod_multiple)
+```
+
+
+```{r}
+# 3. Checking for Multicollinearity (Variance Inflation Factor)
+vif(mod_multiple)
+```
+
+```{r}
+# Fit Logistic Regression Model
+mod_logistic <- glm(malaria_pos ~ rainfall + bednet + age + ses, 
+                    data = epi_data, 
+                    family = binomial(link = "logit"))
+
+# Publication-ready table with Exponentiated Coefficients (Odds Ratios)
+tbl_regression(mod_logistic, exponentiate = TRUE) |> 
+  add_global_p() |> 
+  bold_labels() |> 
+  modify_caption("**Table 2. Multivariable Logistic Regression for Malaria Positivity**")
+```
+
+```{r}
+# Create a hypothetical dataset to predict across a range of rainfall
+new_data <- expand.grid(
+  rainfall = seq(min(epi_data$rainfall), max(epi_data$rainfall), by = 5),
+  bednet = c(0, 1),
+  age = mean(epi_data$age), # Hold age at its mean
+  ses = "Medium"            # Hold SES at its baseline
+)
+
+
+new_data
+```
+
+
+```{r}
+# Predict probabilities and standard errors for confidence intervals
+predictions <- predict(mod_logistic, newdata = new_data, type = "link", se.fit = TRUE)
+
+predictions
+```
+
+
+```{r}
+
+
+
+# Calculate 95% Confidence Intervals on the logit scale, back-transform to probabilities
+inv_logit <- function(x) exp(x) / (1 + exp(x))
+new_data$pred_prob <- inv_logit(predictions$fit)
+new_data$ci_lower <- inv_logit(predictions$fit - (1.96 * predictions$se.fit))
+new_data$ci_upper <- inv_logit(predictions$fit + (1.96 * predictions$se.fit))
+
+# Format the factor for the legend
+new_data$Bednet_Status <- factor(new_data$bednet, labels = c("No Bed-net", "Uses Bed-net"))
+
+new_data
+```
+
+```{r}
+ggplot(new_data, aes(x = rainfall, y = pred_prob, color = Bednet_Status, fill = Bednet_Status)) 
+```
+
+```{r}
+ggplot(new_data, aes(x = rainfall, y = pred_prob, color = Bednet_Status, fill = Bednet_Status)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.6, color = NA) 
+```
+```{r}
+ggplot(new_data, aes(x = rainfall, y = pred_prob, color = Bednet_Status, fill = Bednet_Status)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2)
+```
+```{r}
+# Build a publication-ready plot
+ggplot(new_data, aes(x = rainfall, y = pred_prob, color = Bednet_Status, fill = Bednet_Status)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("#B2182B", "#2166AC")) + # Custom elegant colors
+  scale_fill_manual(values = c("#B2182B", "#2166AC"))
+```
+```{r}
+ggplot(new_data, aes(x = rainfall, y = pred_prob, color = Bednet_Status, fill = Bednet_Status)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("#B2182B", "#2166AC")) + # Custom elegant colors
+  scale_fill_manual(values = c("#B2182B", "#2166AC")) +
+  labs(
+    title = "Predicted Probability of Malaria by Rainfall",
+    subtitle = "Adjusted for Age (mean) and SES (Medium)",
+    x = "Cumulative Rainfall (mm)",
+    y = "Predicted Probability",
+    color = "Intervention",
+    fill = "Intervention"
+  )
+```
+```{r}
+# Build a publication-ready plot
+ggplot(new_data, aes(x = rainfall, y = pred_prob, color = Bednet_Status, fill = Bednet_Status)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("#B2182B", "#2166AC")) + # Custom elegant colors
+  scale_fill_manual(values = c("#B2182B", "#2166AC")) +
+  labs(
+    title = "Predicted Probability of Malaria by Rainfall",
+    subtitle = "Adjusted for Age (mean) and SES (Medium)",
+    x = "Cumulative Rainfall (mm)",
+    y = "Predicted Probability",
+    color = "Intervention",
+    fill = "Intervention"
+  ) +
+  theme_classic(base_size = 14) # Clean, minimal theme suitable for journals
+```
+```{r}
+# Build a publication-ready plot
+ggplot(new_data, aes(x = rainfall, y = pred_prob, color = Bednet_Status, fill = Bednet_Status)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("#B2182B", "#2166AC")) + # Custom elegant colors
+  scale_fill_manual(values = c("#B2182B", "#2166AC")) +
+  labs(
+    title = "Predicted Probability of Malaria by Rainfall",
+    subtitle = "Adjusted for Age (mean) and SES (Medium)",
+    x = "Cumulative Rainfall (mm)",
+    y = "Predicted Probability",
+    color = "Intervention",
+    fill = "Intervention"
+  ) +
+  theme_classic(base_size = 14) + # Clean, minimal theme suitable for journals
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+```
+
+
+```{r}
+# Build a publication-ready plot
+ggplot(new_data, aes(x = rainfall, y = pred_prob, color = Bednet_Status, fill = Bednet_Status)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("#B2182B", "#2166AC")) + # Custom elegant colors
+  scale_fill_manual(values = c("#B2182B", "#2166AC")) +
+  labs(
+    title = "Predicted Probability of Malaria by Rainfall",
+    subtitle = "Adjusted for Age (mean) and SES (Medium)",
+    x = "Cumulative Rainfall (mm)",
+    y = "Predicted Probability",
+    color = "Intervention",
+    fill = "Intervention"
+  ) +
+  theme_classic(base_size = 14) + # Clean, minimal theme suitable for journals
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+
+```
+```{r}
+# Fit a Base model vs Full model
+mod_base <- glm(malaria_pos ~ rainfall + age, 
+                data=epi_data, 
+                family=binomial(link = "logit"))
+
+
+# Publication-ready Side-by-Side Table Comparison
+tbl_base <- tbl_regression(mod_base, exponentiate = TRUE) |> 
+            add_global_p()
+
+tbl_base
+```
+
+```{r}
+mod_full <- glm(malaria_pos ~ rainfall + age + bednet + ses, 
+                data=epi_data, 
+                family=binomial(link = "logit"))
+
+
+tbl_full <- tbl_regression(mod_full, exponentiate = TRUE) |> 
+            add_global_p()
+
+tbl_full
+```
+
+
+```{r}
+
+
+tbl_merge(
+  tbls = list(tbl_base, tbl_full),
+  tab_spanner = c("**Base Model**", "**Fully Adjusted Model**")
+)
+
+```
+
+```{r}
+# Likelihood Ratio Test
+anova(mod_base, mod_full, test = "Chisq") 
+```
+
+```{r}
+# Crude effect of rainfall on Malaria
+crude_model <- glm(malaria_pos ~ rainfall, data = epi_data, 
+                   family = binomial(link = "logit"))
+
+mod_logistic <- glm(malaria_pos ~ rainfall + bednet + age + ses, data = epi_data, 
+                    family = binomial(link = "logit"))
+```
+
+```{r}
+tbl_regression(mod_logistic, exponentiate = FALSE) |> 
+            add_global_p()
+```
+
+
+```{r}
+coef(mod_logistic) |> round(2)
+```
+
+```{r}
+coef(mod_logistic)["rainfall"]
+```
+
+
+```{r}
+
+
+crude_coef <- coef(crude_model)["rainfall"]
+
+# Adjusted effect (controlling for age, SES, bednet)
+adj_coef <- coef(mod_logistic)["rainfall"]
+
+# Calculate % change
+percent_change <- abs((crude_coef - adj_coef) / adj_coef) * 100
+cat("Percentage change in rainfall coefficient:", round(percent_change, 2), "%\n")
+
+```
+
+```{r}
+# Add interaction term (rainfall * bednet)
+mod_interaction <- glm(malaria_pos ~ rainfall * bednet + age + ses, 
+                       data = epi_data, family = binomial(link = "logit"))
+
+# Print interaction table
+tbl_regression(mod_interaction, exponentiate = TRUE) |>
+  add_global_p() |> 
+  bold_p()
+```
+
+
+```{r}
+
+
+# Calculate marginal means at specific rainfall checkpoints
+marginal_probs <- emmeans(mod_interaction, ~ bednet | rainfall, 
+                          at = list(rainfall = c(70, 130)), 
+                          type = "response")
+marginal_probs
+```
+
+# Solution to examples
+
+```{r}
+# Code Solution
+mod_bmi <- lm(bmi ~ age + sex + ses, data = epi_data)
+tbl_regression(mod_bmi)
+```
+
+```{r}
+# Code Solution
+epi_data$pm10 <- epi_data$pm25 * 1.5 + rnorm(500, 0, 2)
+mod_coll <- lm(sbp ~ pm25 + pm10 + age + sex, data = epi_data)
+vif(mod_coll)
+```
+
+```{r}
+# Code Solution
+mod_ses_malaria <- glm(malaria_pos ~ age + ses, data = epi_data, family = binomial)
+tbl_regression(mod_ses_malaria, exponentiate = TRUE)
+```
+
